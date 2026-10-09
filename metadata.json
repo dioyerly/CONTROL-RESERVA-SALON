@@ -1,0 +1,6 @@
+{
+  "name": "MAESTRO — Sistema Inteligente de Turnos",
+  "description": "Plataforma de alta precisión para reservas y planificación de recursos en salones de belleza y profesionales independientes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -13,24 +13,26 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({
   onLoginSuccess,
   onCancel
 }) => {
-  const defaultEmail = business.ownerCredentials?.email || 'admin@atelierbeaute.com';
-  const defaultPass = business.ownerCredentials?.password || 'admin123';
-
-  const [email, setEmail] = useState(defaultEmail);
-  const [password, setPassword] = useState(defaultPass);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    const validEmail = business.ownerCredentials?.email || 'admin@atelierbeaute.com';
-    const validPassword = business.ownerCredentials?.password || 'admin123';
+    // Sin credenciales configuradas no hay acceso: no se usa ningún valor por defecto.
+    const validEmail = business.ownerCredentials?.email;
+    const validPassword = business.ownerCredentials?.password;
+    if (!validEmail || !validPassword) {
+      setError('Este negocio no tiene acceso de propietario configurado.');
+      return;
+    }
 
     if (email.trim().toLowerCase() === validEmail.toLowerCase() && password === validPassword) {
       onLoginSuccess();
     } else {
-      setError(`Credenciales incorrectas. Para esta demo puedes usar: ${validEmail} / ${validPassword}`);
+      setError('Correo o contraseña incorrectos.');
     }
   };
 
@@ -53,7 +55,7 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-[#FAF8F4] border border-[#CEAAA3] rounded-lg text-xs text-[#302C29] flex items-center gap-2">
+          <div role="alert" className="mb-4 p-3 bg-[#FAF8F4] border border-[#CEAAA3] rounded-lg text-xs text-[#302C29] flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-[#CEAAA3] shrink-0" />
             <span>{error}</span>
           </div>
@@ -67,6 +69,7 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({
               <input
                 type="email"
                 required
+                autoComplete="username"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="propietario@negocio.com"
@@ -82,18 +85,13 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({
               <input
                 type="password"
                 required
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
                 className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-[#E5DDD3] bg-[#FAF8F4] text-xs text-[#302C29] focus:outline-none focus:ring-1 focus:ring-[#B69A70]"
               />
             </div>
-          </div>
-
-          <div className="p-2.5 bg-[#FAF8F4] border border-[#E5DDD3]/70 rounded-lg text-[11px] text-[#80766E] space-y-0.5">
-            <div>Credenciales de demostración preconfiguradas:</div>
-            <div>Usuario: <strong className="text-[#302C29]">{defaultEmail}</strong></div>
-            <div>Contraseña: <strong className="text-[#302C29]">{defaultPass}</strong></div>
           </div>
 
           <div className="pt-2 flex items-center justify-between gap-3">

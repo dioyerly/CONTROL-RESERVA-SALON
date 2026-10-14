@@ -5,7 +5,7 @@ import {
   AgendaBlock, 
   Professional 
 } from '../../types';
-import { timeToMinutes } from '../../services/availabilityEngine';
+import { timeToMinutes, formatDateIso } from '../../services/availabilityEngine';
 import { formatCurrency } from '../../services/pricingEngine';
 import { 
   ChevronLeft, 
@@ -70,7 +70,7 @@ export const VisualCalendarView: React.FC<VisualCalendarViewProps> = ({
   };
 
   const handleToday = () => {
-    onSelectDate('2026-10-10'); // Demo current date
+    onSelectDate(formatDateIso(new Date()));
   };
 
   // Week math

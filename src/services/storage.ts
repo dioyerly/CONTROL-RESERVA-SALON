@@ -1,19 +1,14 @@
 import { BusinessConfig, Appointment, AgendaBlock, OwnerNotification } from '../types';
-import { 
-  BUSINESS_SALON, 
-  BUSINESS_INDEPENDENT, 
-  INITIAL_APPOINTMENTS_SALON, 
-  INITIAL_AGENDA_BLOCKS_SALON 
-} from '../data/demoData';
+import { isSamePhone } from './phone';
 
+// Mismas claves que antes: los datos que ya cargaste siguen visibles en la app.
 const STORAGE_KEYS = {
   ACTIVE_BIZ_ID: 'maestro_active_biz_id',
   BUSINESSES: 'maestro_businesses_v2',
   APPOINTMENTS: 'maestro_appointments_v2',
   BLOCKS: 'maestro_agenda_blocks_v2',
   NOTIFICATIONS: 'maestro_notifications_v2',
-  OWNER_AUTH: 'maestro_owner_logged_in',
-  SYNC_VERSION: 'maestro_sync_ver'
+  OWNER_AUTH: 'maestro_owner_logged_in'
 };
 
 // Cross-tab real-time sync channel
@@ -65,25 +60,6 @@ function broadcastChange() {
   notifySubscribers();
 }
 
-// Memory lock for atomic operations to prevent race conditions
-const atomicLocks = new Set<string>();
-
-export async function acquireSlotLock(resourceKey: string, timeoutMs = 2500): Promise<boolean> {
-  if (atomicLocks.has(resourceKey)) {
-    return false;
-  }
-  atomicLocks.add(resourceKey);
-  // Auto-release after timeout in case of failure
-  setTimeout(() => {
-    atomicLocks.delete(resourceKey);
-  }, timeoutMs);
-  return true;
-}
-
-export function releaseSlotLock(resourceKey: string): void {
-  atomicLocks.delete(resourceKey);
-}
-
 // Storage helpers
 function getJson<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') return fallback;
@@ -105,29 +81,15 @@ function setJson<T>(key: string, value: T): void {
   }
 }
 
-// Initialize default store if empty
-export function initStore(): void {
-  const existingBusinesses = getJson<BusinessConfig[] | null>(STORAGE_KEYS.BUSINESSES, null);
-  if (!existingBusinesses || existingBusinesses.length === 0) {
-    setJson(STORAGE_KEYS.BUSINESSES, [BUSINESS_SALON, BUSINESS_INDEPENDENT]);
-    setJson(STORAGE_KEYS.ACTIVE_BIZ_ID, BUSINESS_SALON.id);
-    setJson(STORAGE_KEYS.APPOINTMENTS, INITIAL_APPOINTMENTS_SALON);
-    setJson(STORAGE_KEYS.BLOCKS, INITIAL_AGENDA_BLOCKS_SALON);
-  }
-}
-
-// Public API
+// Public API. La app arranca vacía: no hay datos de ejemplo.
 export function getAllBusinesses(): BusinessConfig[] {
-  initStore();
-  return getJson<BusinessConfig[]>(STORAGE_KEYS.BUSINESSES, [BUSINESS_SALON, BUSINESS_INDEPENDENT]);
+  return getJson<BusinessConfig[]>(STORAGE_KEYS.BUSINESSES, []);
 }
 
-export function getActiveBusiness(): BusinessConfig {
-  initStore();
-  const activeId = getJson<string>(STORAGE_KEYS.ACTIVE_BIZ_ID, BUSINESS_SALON.id);
+export function getActiveBusiness(): BusinessConfig | null {
+  const activeId = getJson<string | null>(STORAGE_KEYS.ACTIVE_BIZ_ID, null);
   const businesses = getAllBusinesses();
-  const found = businesses.find(b => b.id === activeId);
-  return found || businesses[0] || BUSINESS_SALON;
+  return businesses.find(b => b.id === activeId) || businesses[0] || null;
 }
 
 export function setActiveBusinessId(id: string): void {
@@ -150,20 +112,43 @@ export function saveBusinessConfig(config: BusinessConfig): void {
 }
 
 export function getAppointments(businessId?: string): Appointment[] {
-  initStore();
   const all = getJson<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, []);
   if (!businessId) return all;
   return all.filter(a => a.businessId === businessId);
 }
 
-export function getAppointmentByCode(code: string): Appointment | null {
-  const all = getAppointments();
+/**
+ * Consulta pública de una reserva: exige código Y teléfono.
+ * Devuelve null tanto si el código no existe como si el teléfono no coincide
+ * (así no se puede saber cuál de los dos datos falló).
+ *
+ * Nota: esto reduce la exposición desde la pantalla. No es privacidad real:
+ * los datos siguen en localStorage y la comparación ocurre en el navegador.
+ * Eso requiere backend.
+ */
+export function findAppointmentForClient(code: string, phone: string): Appointment | null {
   const cleanCode = code.trim().toUpperCase();
-  return all.find(a => a.bookingCode.toUpperCase() === cleanCode || a.id === code) || null;
+  if (!cleanCode || !phone.trim()) return null;
+  const match = getAppointments().find(a => a.bookingCode.toUpperCase() === cleanCode);
+  if (!match) return null;
+  return isSamePhone(match.customer.phone, phone) ? match : null;
+}
+
+/**
+ * Agenda para la pantalla pública: mismos horarios, servicios y profesionales,
+ * pero sin nombres, teléfonos, emails ni notas de los clientes.
+ */
+export function getPublicOccupancy(businessId: string): Appointment[] {
+  return getAppointments(businessId).map(a => ({
+    ...a,
+    bookingCode: '',
+    customer: { name: '', phone: '' },
+    internalNotes: undefined,
+    priceNote: undefined
+  }));
 }
 
 export function getAgendaBlocks(businessId?: string): AgendaBlock[] {
-  initStore();
   const all = getJson<AgendaBlock[]>(STORAGE_KEYS.BLOCKS, []);
   if (!businessId) return all;
   return all.filter(b => b.businessId === businessId);
@@ -208,7 +193,6 @@ export function removeAgendaBlock(blockId: string): void {
 }
 
 export function getOwnerNotifications(businessId?: string): OwnerNotification[] {
-  initStore();
   const all = getJson<OwnerNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
   if (!businessId) return all;
   return all.filter(n => n.businessId === businessId);
@@ -228,20 +212,42 @@ export function markNotificationRead(notificationId: string): void {
   broadcastChange();
 }
 
-export function isOwnerLoggedIn(): boolean {
-  return getJson<boolean>(STORAGE_KEYS.OWNER_AUTH, false);
-}
+/**
+ * Vacía la agenda (turnos, bloqueos y avisos) solo del negocio indicado.
+ * La configuración del negocio (servicios, equipo, horarios) se conserva.
+ */
+export function clearBusinessAgenda(businessId: string): void {
+  const appointments = getJson<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, [])
+    .filter(a => a.businessId !== businessId);
+  const blocks = getJson<AgendaBlock[]>(STORAGE_KEYS.BLOCKS, [])
+    .filter(b => b.businessId !== businessId);
+  const notifications = getJson<OwnerNotification[]>(STORAGE_KEYS.NOTIFICATIONS, [])
+    .filter(n => n.businessId !== businessId);
 
-export function setOwnerLoggedIn(val: boolean): void {
-  setJson(STORAGE_KEYS.OWNER_AUTH, val);
+  setJson(STORAGE_KEYS.APPOINTMENTS, appointments);
+  setJson(STORAGE_KEYS.BLOCKS, blocks);
+  setJson(STORAGE_KEYS.NOTIFICATIONS, notifications);
   broadcastChange();
 }
 
-export function resetToDemo(): void {
-  setJson(STORAGE_KEYS.BUSINESSES, [BUSINESS_SALON, BUSINESS_INDEPENDENT]);
-  setJson(STORAGE_KEYS.ACTIVE_BIZ_ID, BUSINESS_SALON.id);
-  setJson(STORAGE_KEYS.APPOINTMENTS, INITIAL_APPOINTMENTS_SALON);
-  setJson(STORAGE_KEYS.BLOCKS, INITIAL_AGENDA_BLOCKS_SALON);
-  setJson(STORAGE_KEYS.NOTIFICATIONS, []);
+/** Cuántos registros hay guardados en este navegador, de todos los negocios (para la confirmación). */
+export function getStoredCounts(): { businesses: number; appointments: number; blocks: number; notifications: number } {
+  return {
+    businesses: getAllBusinesses().length,
+    appointments: getAppointments().length,
+    blocks: getAgendaBlocks().length,
+    notifications: getOwnerNotifications().length
+  };
+}
+
+/** Borra absolutamente todo lo guardado en este navegador, de todos los negocios: negocios, turnos, bloqueos y avisos. */
+export function resetAllData(): void {
+  Object.values(STORAGE_KEYS).forEach(key => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // ignore
+    }
+  });
   broadcastChange();
 }

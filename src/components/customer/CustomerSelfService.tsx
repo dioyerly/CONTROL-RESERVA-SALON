@@ -6,10 +6,10 @@ import {
   CalculatedSlot 
 } from '../../types';
 import { MonthCalendar } from '../booking/MonthCalendar';
-import { 
-  getAppointmentByCode, 
-  saveAppointment, 
-  updateAppointmentStatus 
+import {
+  findAppointmentForClient,
+  saveAppointment,
+  updateAppointmentStatus
 } from '../../services/storage';
 import { 
   verifyAndConfirmBooking, 
@@ -28,6 +28,12 @@ import {
   Share2
 } from 'lucide-react';
 
+// Mismo mensaje para código inexistente y teléfono incorrecto: no revela cuál de los dos falló.
+const LOOKUP_ERROR = 'No encontramos una reserva con ese código y teléfono. Revisa los datos e intenta nuevamente.';
+
+// Nota de seguridad: allAppointments llega sin nombres, teléfonos ni notas (solo horarios ocupados).
+// Esto reduce la exposición desde la pantalla, pero no es privacidad real: los datos siguen en
+// localStorage. Para eso hace falta backend.
 interface CustomerSelfServiceProps {
   business: BusinessConfig;
   allAppointments: Appointment[];
@@ -41,13 +47,10 @@ export const CustomerSelfService: React.FC<CustomerSelfServiceProps> = ({
   agendaBlocks,
   initialCode = ''
 }) => {
+  // El turno solo se muestra después de verificar código Y teléfono; el código inicial no alcanza.
   const [searchCode, setSearchCode] = useState(initialCode);
-  const [activeAppointment, setActiveAppointment] = useState<Appointment | null>(() => {
-    if (initialCode) {
-      return getAppointmentByCode(initialCode);
-    }
-    return null;
-  });
+  const [searchPhone, setSearchPhone] = useState('');
+  const [activeAppointment, setActiveAppointment] = useState<Appointment | null>(null);
 
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
@@ -60,18 +63,19 @@ export const CustomerSelfService: React.FC<CustomerSelfServiceProps> = ({
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     setMessage(null);
-    if (!searchCode.trim()) return;
+    if (!searchCode.trim() || !searchPhone.trim()) {
+      setActiveAppointment(null);
+      setMessage({ text: 'Ingresa el código de reserva y el teléfono con el que reservaste.', type: 'error' });
+      return;
+    }
 
-    const apt = getAppointmentByCode(searchCode.trim());
+    const apt = findAppointmentForClient(searchCode, searchPhone);
     if (apt) {
       setActiveAppointment(apt);
       setIsRescheduling(false);
     } else {
       setActiveAppointment(null);
-      setMessage({
-        text: `No se encontró ninguna reserva con el código "${searchCode.trim().toUpperCase()}". Revisa el número e intenta nuevamente.`,
-        type: 'error'
-      });
+      setMessage({ text: LOOKUP_ERROR, type: 'error' });
     }
   };
 
@@ -181,7 +185,7 @@ export const CustomerSelfService: React.FC<CustomerSelfServiceProps> = ({
 
       {/* Code Search Box */}
       <form onSubmit={handleSearch} className="mb-8">
-        <div className="flex gap-2 max-w-md mx-auto">
+        <div className="flex gap-2 max-w-xl mx-auto">
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-[#80766E] absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
@@ -189,7 +193,19 @@ export const CustomerSelfService: React.FC<CustomerSelfServiceProps> = ({
               value={searchCode}
               onChange={(e) => setSearchCode(e.target.value.toUpperCase())}
               placeholder="Ej. MAE-4912"
+              aria-label="Código de reserva"
               className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-[#E5DDD3] bg-white text-sm font-mono uppercase tracking-wider text-[#302C29] focus:outline-none focus:ring-1 focus:ring-[#B69A70]"
+            />
+          </div>
+          <div className="relative flex-1">
+            <input
+              type="tel"
+              value={searchPhone}
+              onChange={(e) => setSearchPhone(e.target.value)}
+              placeholder="Teléfono de la reserva"
+              aria-label="Teléfono de la reserva"
+              autoComplete="tel"
+              className="w-full px-3 py-2.5 rounded-lg border border-[#E5DDD3] bg-white text-sm text-[#302C29] focus:outline-none focus:ring-1 focus:ring-[#B69A70]"
             />
           </div>
           <button

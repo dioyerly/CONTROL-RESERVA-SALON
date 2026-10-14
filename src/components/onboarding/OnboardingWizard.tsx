@@ -20,44 +20,34 @@ import {
 } from 'lucide-react';
 
 interface OnboardingWizardProps {
-  onClose: () => void;
+  // Sin onClose no se muestra la X: es el caso de un espacio sin negocio todavía
+  onClose?: () => void;
   onFinish: (newBiz: BusinessConfig) => void;
 }
 
+// Asistente de alta de negocio. Todo arranca vacío y se edita luego en el Estudio.
 export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onFinish }) => {
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Business basic info
   const [businessName, setBusinessName] = useState('');
+  // Nombre personal de la dueña/o o profesional: no es el nombre del negocio
+  const [ownerPersonName, setOwnerPersonName] = useState('');
   const [mode, setMode] = useState<BusinessMode>('independent');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
 
-  // Step 2 categories selected
-  const [selectedCategoryKeys, setSelectedCategoryKeys] = useState<string[]>([
-    'manicura', 'peluqueria'
-  ]);
+  // Owner access credentials (required, no default fallback)
+  const [ownerEmail, setOwnerEmail] = useState('');
+  const [ownerPassword, setOwnerPassword] = useState('');
+  const [ownerPasswordConfirm, setOwnerPasswordConfirm] = useState('');
+  const [step1Error, setStep1Error] = useState<string | null>(null);
 
-  // Step 3 services list
-  const [services, setServices] = useState<Service[]>([
-    {
-      id: 'serv_new_1',
-      categoryId: 'cat_1',
-      name: 'Manicura Semipermanente',
-      description: 'Cuidado y esmaltado de alta duración.',
-      durationMinutes: 45,
-      bufferCleanupMinutes: 10,
-      minAdvanceHours: 2,
-      price: 25000,
-      priceType: 'fixed',
-      enabledProfessionalIds: ['*'],
-      requiredResourceTypes: ['puesto_manicura'],
-      locationIds: ['loc_main'],
-      allowSimultaneous: false,
-      requiresConsultation: false,
-      isOnlineBookingEnabled: true
-    }
-  ]);
+  // Step 2 categories selected
+  const [selectedCategoryKeys, setSelectedCategoryKeys] = useState<string[]>([]);
+
+  // Step 3 services list (vacío: se completa a gusto)
+  const [services, setServices] = useState<Service[]>([]);
 
   // Step 4 hours
   const [openTime, setOpenTime] = useState('09:00');
@@ -109,8 +99,29 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
   };
 
   const handleRemoveService = (idx: number) => {
-    if (services.length <= 1) return;
     setServices(services.filter((_, i) => i !== idx));
+  };
+
+  const handleGoToStep2 = () => {
+    const email = ownerEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setStep1Error('Ingresa un correo válido para el acceso del propietario.');
+      return;
+    }
+    if (!ownerPersonName.trim()) {
+      setStep1Error('Ingresa tu nombre personal (dueña/o o profesional).');
+      return;
+    }
+    if (ownerPassword.length < 8) {
+      setStep1Error('La contraseña del propietario debe tener al menos 8 caracteres.');
+      return;
+    }
+    if (ownerPassword !== ownerPasswordConfirm) {
+      setStep1Error('Las contraseñas no coinciden.');
+      return;
+    }
+    setStep1Error(null);
+    setStep(2);
   };
 
   const handleCompleteSetup = () => {
@@ -128,12 +139,13 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
       isMain: true
     };
 
-    const mainStaff: Professional = {
+    // Freelance: el propietario es también el único profesional. Salón: el equipo se carga en el Estudio.
+    const mainStaff: Professional | null = mode !== 'independent' ? null : {
       id: 'prof_owner_1',
-      name: businessName ? `${businessName} (Responsable)` : 'Profesional Principal',
-      role: mode === 'independent' ? 'Profesional Independiente' : 'Director / Estilista',
-      email: 'contacto@negocio.com',
-      pin: '1234',
+      name: ownerPersonName.trim() || 'Profesional Independiente',
+      role: 'Profesional Independiente',
+      email: ownerEmail.trim().toLowerCase(),
+      pin: String(1000 + Math.floor(Math.random() * 9000)),
       enabledServiceIds: ['*'],
       locationIds: ['loc_main'],
       canManageOwnBreaks: true,
@@ -149,15 +161,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
       }
     };
 
-    const resources: Resource[] = [
-      {
-        id: 'res_puesto_1',
-        name: 'Puesto Principal de Atención',
-        type: 'puesto_manicura',
-        totalQuantity: mode === 'salon_employees' ? 2 : 1,
-        locationId: 'loc_main'
-      }
-    ];
+    const resources: Resource[] = [];
 
     const newBusinessConfig: BusinessConfig = {
       id: bizId,
@@ -182,7 +186,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
       resources,
       categories,
       services,
-      professionals: [mainStaff],
+      professionals: mainStaff ? [mainStaff] : [],
       simultaneousRules: [],
       bundlePricingRules: [],
       weeklyBusinessHours: {
@@ -194,7 +198,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
         6: { start: '10:00', end: '16:00', breaks: [] },
         0: null
       },
-      holidaysAndVacations: []
+      holidaysAndVacations: [],
+      ownerCredentials: {
+        email: ownerEmail.trim().toLowerCase(),
+        password: ownerPassword
+      }
     };
 
     saveBusinessConfig(newBusinessConfig);
@@ -205,14 +213,17 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
   return (
     <div className="fixed inset-0 z-50 bg-[#302C29]/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-white border border-[#E5DDD3] rounded-2xl w-full max-w-2xl p-6 sm:p-10 shadow-2xl relative my-8 text-xs">
-        
-        <button
-          onClick={onClose}
-          aria-label="Cerrar asistente"
-          className="absolute top-5 right-5 text-[#80766E] hover:text-[#302C29] p-1.5 rounded-lg border border-transparent hover:border-[#E5DDD3] transition-colors cursor-pointer"
-        >
-          <X className="w-5 h-5" />
-        </button>
+
+        {onClose && (
+          <button
+            onClick={onClose}
+            aria-label="Cerrar asistente"
+            className="absolute top-5 right-5 text-[#80766E] hover:text-[#302C29] p-1.5 rounded-lg border border-transparent hover:border-[#E5DDD3] transition-colors cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
+
 
         {/* Header */}
         <div className="mb-6">
@@ -249,6 +260,64 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
             </div>
 
             <div>
+              <label className="block font-semibold text-[#302C29] mb-1">Tu nombre (dueña/o o profesional) *</label>
+              <input
+                type="text"
+                required
+                value={ownerPersonName}
+                onChange={(e) => setOwnerPersonName(e.target.value)}
+                placeholder="Ej. Camila Morales"
+                className="w-full p-2.5 rounded-lg border border-[#E5DDD3] bg-[#FAF8F4] text-xs text-[#302C29]"
+              />
+              <span className="text-[11px] text-[#80766E] mt-1 block">
+                Es tu nombre personal, no el del negocio. Así aparece en la agenda y en la lista del equipo.
+              </span>
+            </div>
+
+            <div className="p-4 rounded-xl border border-[#E5DDD3] bg-[#FAF8F4] space-y-3">
+              <div>
+                <span className="block font-semibold text-[#302C29]">Acceso del propietario</span>
+                <span className="text-[11px] text-[#80766E]">Con estos datos ingresarás al Estudio. Guárdalos en un lugar seguro.</span>
+              </div>
+              <div>
+                <label className="block font-semibold text-[#302C29] mb-1">Correo del propietario *</label>
+                <input
+                  type="email"
+                  required
+                  autoComplete="off"
+                  value={ownerEmail}
+                  onChange={(e) => setOwnerEmail(e.target.value)}
+                  placeholder="tu@correo.com"
+                  className="w-full p-2.5 rounded-lg border border-[#E5DDD3] bg-white text-xs text-[#302C29]"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-[#302C29] mb-1">Contraseña * (mín. 8)</label>
+                  <input
+                    type="password"
+                    required
+                    autoComplete="new-password"
+                    value={ownerPassword}
+                    onChange={(e) => setOwnerPassword(e.target.value)}
+                    className="w-full p-2.5 rounded-lg border border-[#E5DDD3] bg-white text-xs text-[#302C29]"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-[#302C29] mb-1">Repetir contraseña *</label>
+                  <input
+                    type="password"
+                    required
+                    autoComplete="new-password"
+                    value={ownerPasswordConfirm}
+                    onChange={(e) => setOwnerPasswordConfirm(e.target.value)}
+                    className="w-full p-2.5 rounded-lg border border-[#E5DDD3] bg-white text-xs text-[#302C29]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div>
               <label className="block font-semibold text-[#302C29] mb-2">Modalidad operativa</label>
               <div className="space-y-2">
                 {[
@@ -274,10 +343,14 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onClose, onF
               </div>
             </div>
 
+            {step1Error && (
+              <p className="text-xs text-[#b37a70]">{step1Error}</p>
+            )}
+
             <div className="pt-4 flex justify-end">
               <button
                 type="button"
-                onClick={() => setStep(2)}
+                onClick={handleGoToStep2}
                 className="px-5 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg flex items-center gap-1.5 cursor-pointer"
               >
                 <span>Continuar</span>

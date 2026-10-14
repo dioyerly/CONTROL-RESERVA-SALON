@@ -8,6 +8,7 @@ import {
   CustomerData 
 } from '../../types';
 import { MonthCalendar } from './MonthCalendar';
+import heroBackground from '../../assets/images/hero-background.png';
 import { calculatePricing, formatCurrency } from '../../services/pricingEngine';
 import { verifyAndConfirmBooking } from '../../services/availabilityEngine';
 import { saveAppointment } from '../../services/storage';
@@ -201,16 +202,20 @@ export const CustomerBookingFlow: React.FC<CustomerBookingFlowProps> = ({
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8 lg:py-12">
-      {/* Brand Hero Showcase */}
-      <div className="mb-10 text-center">
-        <span className="text-xs uppercase tracking-widest text-[#B69A70] font-medium block mb-1">
+    <div className="max-w-6xl mx-auto px-4 py-8 lg:py-12">
+      {/* Brand Hero Showcase: fondo marmolado con el nombre del negocio encima */}
+      <div
+        className="relative mb-10 rounded-2xl overflow-hidden text-center min-h-[320px] flex flex-col items-center justify-center px-6 py-12 bg-cover bg-center border border-[#E5DDD3]"
+        style={{ backgroundImage: `url(${heroBackground})` }}
+      >
+        <div className="relative">
+        <span className="text-xs uppercase tracking-widest text-[#B69A70] font-medium block mb-2">
           {business.mode === 'independent' ? 'Estudio Independiente' : 'Espacio de Belleza & Bienestar'}
         </span>
-        <h1 className="font-serif-editorial text-3xl sm:text-4xl lg:text-5xl font-medium text-[#302C29] tracking-tight">
+        <h1 className="font-brand text-4xl sm:text-5xl lg:text-6xl font-medium text-[#302C29] tracking-tight">
           {business.name}
         </h1>
-        <p className="max-w-xl mx-auto text-sm text-[#80766E] mt-2 font-normal leading-relaxed">
+        <p className="max-w-xl mx-auto text-sm text-[#80766E] mt-3 font-normal leading-relaxed">
           {business.tagline}
         </p>
 
@@ -230,6 +235,7 @@ export const CustomerBookingFlow: React.FC<CustomerBookingFlowProps> = ({
             </select>
           </div>
         )}
+        </div>
       </div>
 
       {/* Progress stepper: clean editorial typography without candy pills */}
@@ -350,29 +356,29 @@ export const CustomerBookingFlow: React.FC<CustomerBookingFlowProps> = ({
                 <div
                   key={service.id}
                   onClick={() => toggleService(service.id)}
-                  className={`relative p-5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                  className={`relative p-4 rounded-xl border transition-all cursor-pointer flex flex-col h-full ${
                     isSelected
                       ? 'bg-white border-[#302C29] shadow-sm ring-1 ring-[#302C29]'
                       : 'bg-white border-[#E5DDD3] hover:border-[#B69A70]/60 hover:bg-[#FAF8F4]/50'
                   }`}
                 >
-                  <div>
+                  <div className="flex-1 flex flex-col">
                     <div className="flex items-start justify-between gap-3">
-                      <h3 className="font-serif-editorial text-lg font-medium text-[#302C29]">
+                      <h3 className="font-serif-editorial text-xl font-medium leading-snug text-[#302C29]">
                         {service.name}
                       </h3>
-                      <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                      <div className={`w-5 h-5 mt-0.5 rounded border flex items-center justify-center shrink-0 transition-colors ${
                         isSelected ? 'bg-[#302C29] border-[#302C29] text-white' : 'border-[#E5DDD3] bg-white'
                       }`}>
                         {isSelected && <Check className="w-3.5 h-3.5" />}
                       </div>
                     </div>
-                    <p className="text-xs text-[#80766E] mt-1.5 line-clamp-2 leading-relaxed">
+                    <p className="text-xs text-[#80766E] mt-2 leading-relaxed line-clamp-3">
                       {service.description}
                     </p>
                   </div>
 
-                  <div className="mt-4 pt-3 border-t border-[#E5DDD3]/50 flex items-center justify-between text-xs">
+                  <div className="mt-auto pt-3 border-t border-[#E5DDD3]/50 flex items-center justify-between text-xs">
                     <span className="flex items-center gap-1 text-[#80766E]">
                       <Clock className="w-3.5 h-3.5" />
                       <span>{service.durationMinutes} min</span>

@@ -60,6 +60,7 @@ export interface Service {
   categoryId: string;
   name: string;
   description: string;
+  imageUrl?: string; // Foto chica del servicio (data URL, reducida al cargarla)
   durationMinutes: number;
   bufferCleanupMinutes: number; // Tiempo de preparación/limpieza post-servicio
   minAdvanceHours: number;

@@ -27,6 +27,12 @@
   font-family: 'Cormorant Garamond', Georgia, serif;
 }
 
+/* Nombre del negocio o de la persona dueña (Google Fonts, licencia OFL) */
+.font-brand {
+  font-family: 'Italiana', 'Cormorant Garamond', Georgia, serif;
+  font-weight: 400; /* Italiana solo tiene peso normal: evita negrita falsa */
+}
+
 .font-sans-clean {
   font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
 }

@@ -20,11 +20,14 @@ import {
   updateAppointmentStatus, 
   removeAgendaBlock,
   saveBusinessConfig,
-  resetToDemo,
+  resetAllData,
+  getStoredCounts,
+  clearBusinessAgenda,
   getOwnerNotifications,
   markNotificationRead
 } from '../../services/storage';
 import { formatCurrency } from '../../services/pricingEngine';
+import { formatDateIso } from '../../services/availabilityEngine';
 import { 
   Calendar as CalendarIcon, 
   Clock, 
@@ -64,10 +67,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<StudioTab>('agenda');
   const [agendaView, setAgendaView] = useState<AgendaViewMode>('day');
-  const [selectedDate, setSelectedDate] = useState<string>(() => {
-    // Default to today or first appointment date
-    return '2026-10-10';
-  });
+  const [selectedDate, setSelectedDate] = useState<string>(() => formatDateIso(new Date()));
 
   const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('all');
   const [selectedLocationFilter, setSelectedLocationFilter] = useState<string>('all');
@@ -100,8 +100,22 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     setNotifications(getOwnerNotifications(business.id));
   }, [business.id, appointments]);
 
-  // Business settings state (for Ajustes tab)
-  const [settingsForm, setSettingsForm] = useState<BusinessConfig>({ ...business });
+  // Business settings state (for Ajustes tab). Solo contiene los campos que edita Ajustes:
+  // así al guardar no se reescriben servicios, empleados o horarios con una copia vieja.
+  type SettingsForm = Pick<BusinessConfig, 'name' | 'mode' | 'pricingDisplayMode' | 'slotIntervalMinutes' | 'minAdvanceNoticeHours'>;
+  const pickSettings = (biz: BusinessConfig): SettingsForm => ({
+    name: biz.name,
+    mode: biz.mode,
+    pricingDisplayMode: biz.pricingDisplayMode,
+    slotIntervalMinutes: biz.slotIntervalMinutes,
+    minAdvanceNoticeHours: biz.minAdvanceNoticeHours
+  });
+  const [settingsForm, setSettingsForm] = useState<SettingsForm>(() => pickSettings(business));
+
+  // Resincroniza solo al cambiar de negocio, sin pisar cambios no guardados de Ajustes
+  useEffect(() => {
+    setSettingsForm(pickSettings(business));
+  }, [business.id]);
 
   const handleSaveService = (service: Service) => {
     const existingIdx = business.services.findIndex(s => s.id === service.id);
@@ -251,7 +265,8 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
 
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
-    saveBusinessConfig(settingsForm);
+    // Partimos del negocio vigente y aplicamos solo los campos de Ajustes
+    saveBusinessConfig({ ...business, ...settingsForm });
     alert('Configuración del negocio guardada exitosamente.');
     onRefresh();
   };
@@ -264,7 +279,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
           <span className="text-xs uppercase tracking-widest text-[#B69A70] font-semibold block mb-0.5">
             Estudio de Organización Profesional
           </span>
-          <h2 className="font-serif-editorial text-3xl lg:text-4xl font-normal text-[#302C29]">
+          <h2 className="font-brand text-3xl lg:text-4xl font-normal text-[#302C29]">
             {business.name}
           </h2>
           <div className="flex items-center gap-3 text-xs text-[#80766E] mt-1">
@@ -1119,6 +1134,24 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
             </div>
 
             <div>
+              <label className="block font-semibold text-[#302C29] mb-1">Modalidad de trabajo</label>
+              <select
+                value={settingsForm.mode}
+                onChange={(e) => setSettingsForm({ ...settingsForm, mode: e.target.value as BusinessConfig['mode'] })}
+                className="w-full p-2.5 rounded-lg border border-[#E5DDD3] bg-[#FAF8F4] text-xs text-[#302C29]"
+              >
+                <option value="independent">Trabajo independiente (solo yo)</option>
+                <option value="salon_employees">Salón con empleados</option>
+                <option value="multi_staff_capacity">Personal intercambiable por disponibilidad</option>
+                <option value="multi_location">Trabajo en diferentes ubicaciones</option>
+                <option value="home_visit">Atención a domicilio</option>
+              </select>
+              <span className="text-[11px] text-[#80766E] mt-1 block">
+                Cambiar la modalidad no borra clientes, turnos, bloqueos ni equipo.
+              </span>
+            </div>
+
+            <div>
               <label className="block font-semibold text-[#302C29] mb-1">Visualización de Precios (Módulo 7)</label>
               <select
                 value={settingsForm.pricingDisplayMode}
@@ -1161,25 +1194,34 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  if (confirm('¿Restablecer datos demo iniciales? Se recuperarán los ejemplos preconfigurados.')) {
-                    resetToDemo();
+                  const c = getStoredCounts();
+                  const summary =
+                    `Esto borra TODOS los datos guardados en este navegador, de todos los negocios:\n` +
+                    `- ${c.businesses} negocio(s) con sus servicios, equipo, recursos y horarios\n` +
+                    `- ${c.appointments} turno(s) y clientes\n` +
+                    `- ${c.blocks} bloqueo(s) de agenda\n` +
+                    `- ${c.notifications} aviso(s)\n\n` +
+                    `No se puede deshacer. Para confirmar, escribe BORRAR:`;
+                  const typed = window.prompt(summary, '');
+                  if (typed === 'BORRAR') {
+                    resetAllData();
                     onRefresh();
+                  } else if (typed !== null) {
+                    alert('No se borró nada. Debes escribir BORRAR exactamente.');
                   }
                 }}
                 className="text-xs text-[#80766E] hover:underline cursor-pointer"
               >
-                Restablecer datos de demostración
+                Borrar todos los datos guardados en este navegador
               </button>
               <span>·</span>
               <button
                 type="button"
                 onClick={() => {
-                  if (confirm('¿Deseas comenzar desde cero? Se limpiará la agenda de turnos para que puedas cargar tus propios datos y servicios a tu gusto.')) {
-                    // Empty appointments and agenda blocks for this business
-                    localStorage.setItem('maestro_appointments_v2', JSON.stringify([]));
-                    localStorage.setItem('maestro_agenda_blocks_v2', JSON.stringify([]));
+                  if (confirm(`¿Vaciar la agenda de "${business.name}"? Se eliminan sus turnos, bloqueos y avisos. Servicios, equipo y horarios se conservan.`)) {
+                    clearBusinessAgenda(business.id);
                     onRefresh();
-                    alert('Agenda en blanco. Puedes añadir tus empleados, horarios y servicios propios desde las pestañas correspondientes.');
+                    alert('Agenda en blanco. Puedes seguir cargando tus turnos desde el Estudio.');
                   }
                 }}
                 className="text-xs text-[#B69A70] font-semibold hover:underline cursor-pointer"

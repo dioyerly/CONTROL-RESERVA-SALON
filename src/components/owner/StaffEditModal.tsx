@@ -68,7 +68,7 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
       id: staffToEdit ? staffToEdit.id : `prof_new_${Date.now()}`,
       name: name.trim(),
       role: role.trim(),
-      email: email.trim() || `${name.toLowerCase().replace(/\s+/g, '')}@atelierbeaute.com`,
+      email: email.trim(), // Sin email cargado queda vacío: no se inventa una dirección
       pin: pin.trim(),
       avatarUrl: staffToEdit?.avatarUrl,
       enabledServiceIds: enabledServiceIds.length === 0 ? ['*'] : enabledServiceIds,

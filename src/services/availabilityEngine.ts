@@ -5,8 +5,9 @@ import {
   AgendaBlock, 
   CalculatedSlot, 
   DayAvailabilitySummary, 
-  Professional 
+  Professional
 } from '../types';
+import { isSamePhone } from './phone';
 
 // Time utility functions
 export function timeToMinutes(timeStr: string): number {
@@ -207,11 +208,15 @@ export function isClientBusy(
   excludeAppointmentId?: string
 ): boolean {
   if (!clientPhoneOrEmail) return false;
-  const active = appointments.filter(a => 
-    a.date === dateStr && 
+  // Teléfono: comparación normalizada (mismo número, cualquier formato). Email: comparación exacta.
+  const isEmail = clientPhoneOrEmail.includes('@');
+  const active = appointments.filter(a =>
+    a.date === dateStr &&
     a.status !== 'cancelled' &&
     (!excludeAppointmentId || a.id !== excludeAppointmentId) &&
-    (a.customer.phone === clientPhoneOrEmail || (a.customer.email && a.customer.email === clientPhoneOrEmail))
+    (isEmail
+      ? !!a.customer.email && a.customer.email === clientPhoneOrEmail
+      : isSamePhone(a.customer.phone, clientPhoneOrEmail))
   );
 
   for (const a of active) {

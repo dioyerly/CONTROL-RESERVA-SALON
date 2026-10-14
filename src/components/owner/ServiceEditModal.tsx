@@ -22,6 +22,41 @@ export const ServiceEditModal: React.FC<ServiceEditModalProps> = ({
   const [name, setName] = useState(serviceToEdit?.name || '');
   const [categoryId, setCategoryId] = useState(serviceToEdit?.categoryId || business.categories[0]?.id || '');
   const [description, setDescription] = useState(serviceToEdit?.description || '');
+  const [imageUrl, setImageUrl] = useState<string>(serviceToEdit?.imageUrl || '');
+  const [imageError, setImageError] = useState<string | null>(null);
+
+  // Reduce la foto a 360 px de ancho en JPEG para que pese poco en el almacenamiento
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setImageError('El archivo debe ser una imagen.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const width = 360;
+        const height = Math.round((img.height / img.width) * width);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          setImageError('No se pudo procesar la imagen.');
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        setImageUrl(canvas.toDataURL('image/jpeg', 0.8));
+        setImageError(null);
+      };
+      img.onerror = () => setImageError('No se pudo leer la imagen.');
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
   const [durationMinutes, setDurationMinutes] = useState(serviceToEdit?.durationMinutes || 45);
   const [bufferCleanupMinutes, setBufferCleanupMinutes] = useState(serviceToEdit?.bufferCleanupMinutes || 10);
   const [price, setPrice] = useState(serviceToEdit?.price || 30000);
@@ -43,6 +78,7 @@ export const ServiceEditModal: React.FC<ServiceEditModalProps> = ({
       categoryId,
       name: name.trim(),
       description: description.trim(),
+      imageUrl: imageUrl || undefined,
       durationMinutes: Number(durationMinutes),
       bufferCleanupMinutes: Number(bufferCleanupMinutes),
       minAdvanceHours: serviceToEdit?.minAdvanceHours || 2,
@@ -183,6 +219,33 @@ export const ServiceEditModal: React.FC<ServiceEditModalProps> = ({
               placeholder="Detalle sensorial y técnico para el cliente"
               className="w-full p-2.5 rounded-lg border border-[#E5DDD3] bg-[#FAF8F4] text-xs text-[#302C29]"
             />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-[#302C29] mb-1">Foto del servicio (opcional)</label>
+            <div className="flex items-center gap-3">
+              {imageUrl && (
+                <img src={imageUrl} alt="Vista previa del servicio" className="w-24 h-16 object-cover rounded-lg border border-[#E5DDD3]" />
+              )}
+              <div className="flex flex-col gap-1.5">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange}
+                  className="text-xs text-[#80766E]"
+                />
+                {imageUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setImageUrl('')}
+                    className="text-xs text-[#80766E] hover:underline text-left cursor-pointer"
+                  >
+                    Quitar foto
+                  </button>
+                )}
+              </div>
+            </div>
+            {imageError && <p className="text-[11px] text-[#b37a70] mt-1">{imageError}</p>}
           </div>
 
           <div className="flex items-center gap-4 pt-2">

@@ -1,17 +1,23 @@
-import React, { useState } from 'react';
-import { 
-  BusinessConfig, 
-  Appointment, 
-  Professional, 
-  AgendaBlock 
+import React, { useEffect, useState } from 'react';
+import {
+  BusinessConfig,
+  Appointment,
+  Professional,
+  AgendaBlock,
+  CalculatedSlot
 } from '../../types';
-import { 
-  saveAppointment, 
-  addAgendaBlock, 
-  updateAppointmentStatus,
-  addOwnerNotification 
+import {
+  saveAppointment,
+  addAgendaBlock,
+  addOwnerNotification
 } from '../../services/storage';
-import { timeToMinutes, minutesToTime } from '../../services/availabilityEngine';
+import {
+  timeToMinutes,
+  minutesToTime,
+  isProfessionalAvailable,
+  verifyAndConfirmBooking,
+  formatDateIso
+} from '../../services/availabilityEngine';
 import { 
   Lock, 
   Calendar, 
@@ -44,7 +50,7 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
   const [loggedInStaff, setLoggedInStaff] = useState<Professional | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  const [activeDate, setActiveDate] = useState<string>('2026-10-10');
+  const [activeDate, setActiveDate] = useState<string>(() => formatDateIso(new Date()));
 
   // Break blocking form state
   const [breakStart, setBreakStart] = useState('14:30');
@@ -60,6 +66,12 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
   const [newServiceId, setNewServiceId] = useState('');
   const [newAptStartTime, setNewAptStartTime] = useState('10:00');
   const [bookingSuccessMsg, setBookingSuccessMsg] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // Cada apertura o cierre de modal arranca sin error residual
+  useEffect(() => {
+    setFormError(null);
+  }, [showNewAptModal, showBreakModal]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,7 +86,7 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
       setLoggedInStaff(prof);
       setPinInput('');
     } else {
-      setLoginError(`PIN incorrecto para ${prof.name}. (Pista demo: PIN ${prof.pin})`);
+      setLoginError('PIN incorrecto. Verifica tu perfil e intenta nuevamente.');
     }
   };
 
@@ -116,6 +128,21 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
   const handleCreateOwnBreak = (e: React.FormEvent) => {
     e.preventDefault();
     if (!loggedInStaff) return;
+    setFormError(null);
+
+    const startMin = timeToMinutes(breakStart);
+    const endMin = timeToMinutes(breakEnd);
+    if (!breakTitle.trim() || endMin <= startMin) {
+      setFormError('La pausa necesita un motivo y una hora de fin posterior a la de inicio.');
+      return;
+    }
+
+    // Misma regla que las reservas: jornada, pausas, bloqueos y turnos ya agendados.
+    const locationId = loggedInStaff.locationIds[0] || business.locations[0]?.id || 'loc_main';
+    if (!isProfessionalAvailable(loggedInStaff, activeDate, startMin, endMin, locationId, appointments, agendaBlocks)) {
+      setFormError('La pausa se superpone con un turno, bloqueo o descanso, o queda fuera de tu jornada.');
+      return;
+    }
 
     const block: AgendaBlock = {
       id: `blk_staff_${Date.now()}`,
@@ -136,13 +163,56 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
   const handleCreateAppointment = (e: React.FormEvent) => {
     e.preventDefault();
     if (!loggedInStaff || !newCustName.trim() || !newCustPhone.trim()) return;
+    setFormError(null);
 
-    const serv = business.services.find(s => s.id === newServiceId) || availableServicesForStaff[0];
-    if (!serv) return;
+    // Solo servicios habilitados para este profesional.
+    const serv = availableServicesForStaff.find(s => s.id === newServiceId);
+    if (!serv) {
+      setFormError('Selecciona un servicio habilitado para tu perfil.');
+      return;
+    }
+    if (!/^\d{2}:\d{2}$/.test(newAptStartTime)) {
+      setFormError('Indica un horario de inicio válido.');
+      return;
+    }
 
     const startMin = timeToMinutes(newAptStartTime);
     const endMin = startMin + serv.durationMinutes;
     const endTimeStr = minutesToTime(endMin);
+    const locationId = loggedInStaff.locationIds[0] || business.locations[0]?.id || 'loc_main';
+
+    // Valida con el mismo motor que el cliente: jornada, pausas, bloqueos, choques y cliente ocupado.
+    const plannedSlot: CalculatedSlot = {
+      startTime: newAptStartTime,
+      endTime: endTimeStr,
+      isSimultaneousCombo: false,
+      period: startMin < 720 ? 'morning' : startMin < 960 ? 'midday' : 'afternoon',
+      segmentsPlan: [
+        {
+          serviceId: serv.id,
+          serviceName: serv.name,
+          durationMinutes: serv.durationMinutes,
+          startTime: newAptStartTime,
+          endTime: endTimeStr,
+          professionalId: loggedInStaff.id,
+          professionalName: loggedInStaff.name,
+          resourceIds: []
+        }
+      ]
+    };
+    const check = verifyAndConfirmBooking(
+      business,
+      plannedSlot,
+      activeDate,
+      locationId,
+      appointments,
+      agendaBlocks,
+      newCustPhone.trim()
+    );
+    if (!check.success) {
+      setFormError(check.error || 'Ese horario ya no está disponible.');
+      return;
+    }
 
     const bookingCode = `EMP-${Math.floor(1000 + Math.random() * 9000)}`;
     const newApt: Appointment = {
@@ -264,9 +334,6 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
                 placeholder="****"
                 className="w-full p-2.5 rounded-lg border border-[#E5DDD3] bg-[#FAF8F4] text-center font-mono text-base tracking-widest text-[#302C29]"
               />
-              <span className="text-[11px] text-[#80766E] mt-1 block text-center">
-                (Pistas demo: Sofía: 1001, Mateo: 1002, Valentina: 1003, Clara: 1004)
-              </span>
             </div>
 
             <button
@@ -515,6 +582,12 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
               El período quedará protegido contra nuevas reservas para tu perfil.
             </p>
 
+            {formError && (
+              <div role="alert" className="p-2.5 bg-[#FAF8F4] border border-[#CEAAA3] rounded-lg text-[#302C29]">
+                {formError}
+              </div>
+            )}
+
             <form onSubmit={handleCreateOwnBreak} className="space-y-3">
               <div>
                 <label className="block font-semibold mb-1 text-[#302C29]">Motivo</label>
@@ -592,6 +665,12 @@ export const EmployeePortal: React.FC<EmployeePortalProps> = ({
             <p className="text-[11px] text-[#80766E] leading-relaxed">
               El turno se asignará a tu agenda para el <strong>{activeDate}</strong> y enviará una notificación automática al propietario del salón.
             </p>
+
+            {formError && (
+              <div role="alert" className="p-2.5 bg-[#FAF8F4] border border-[#CEAAA3] rounded-lg text-[#302C29]">
+                {formError}
+              </div>
+            )}
 
             <form onSubmit={handleCreateAppointment} className="space-y-3.5">
               <div>

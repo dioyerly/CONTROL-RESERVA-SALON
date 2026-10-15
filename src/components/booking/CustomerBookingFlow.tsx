@@ -1,17 +1,24 @@
-import React, { useState } from 'react';
-import { 
-  BusinessConfig, 
-  Service, 
-  CalculatedSlot, 
-  Appointment, 
-  AgendaBlock, 
-  CustomerData 
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  BusinessConfig,
+  Service,
+  CalculatedSlot,
+  Appointment,
+  AgendaBlock,
+  CustomerData
 } from '../../types';
-import { MonthCalendar } from './MonthCalendar';
+import { MonthCalendar, RemoteAvailability } from './MonthCalendar';
 import heroBackground from '../../assets/images/hero-background.png';
 import { calculatePricing, formatCurrency } from '../../services/pricingEngine';
-import { verifyAndConfirmBooking } from '../../services/availabilityEngine';
-import { saveAppointment } from '../../services/storage';
+import {
+  PublicCatalog,
+  NOT_CONFIGURED_MESSAGE,
+  catalogToBusinessConfig,
+  createPublicBooking,
+  fetchDaySlots,
+  fetchMonthSummary,
+  fetchPublicCatalog
+} from '../../services/supabaseBooking';
 import { 
   Check, 
   Clock, 
@@ -26,17 +33,95 @@ import {
 } from 'lucide-react';
 
 interface CustomerBookingFlowProps {
-  business: BusinessConfig;
-  appointments: Appointment[];
-  agendaBlocks: AgendaBlock[];
+  // UUID del negocio en Supabase, tomado del enlace público /reservar/<uuid>
+  businessUuid: string;
   onBookingComplete: (bookingCode: string) => void;
   onGoToSelfService: (code: string) => void;
 }
 
+// Constantes estables: el calendario remoto no usa agenda local
+const NO_APPOINTMENTS: Appointment[] = [];
+const NO_BLOCKS: AgendaBlock[] = [];
+
+// Página pública de reservas. Usa Supabase: el catálogo, la disponibilidad y la confirmación
+// salen de la base. Sin datos locales: el cliente solo necesita el enlace del negocio.
 export const CustomerBookingFlow: React.FC<CustomerBookingFlowProps> = ({
+  businessUuid,
+  onBookingComplete,
+  onGoToSelfService
+}) => {
+  const [catalog, setCatalog] = useState<PublicCatalog | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    if (!businessUuid) return;
+    let cancelled = false;
+    setCatalog(null);
+    setLoadError(null);
+    fetchPublicCatalog(businessUuid)
+      .then(c => { if (!cancelled) setCatalog(c); })
+      .catch((err: Error) => { if (!cancelled) setLoadError(err.message); });
+    return () => { cancelled = true; };
+  }, [businessUuid, reloadKey]);
+
+  const remoteBusiness = useMemo(
+    () => (catalog ? catalogToBusinessConfig(catalog, businessUuid) : null),
+    [catalog, businessUuid]
+  );
+
+  if (!businessUuid) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-24 text-center">
+        <h2 className="font-serif-editorial text-3xl text-[#302C29]">Reservas no configuradas</h2>
+        <p className="text-xs text-[#80766E] mt-3">{NOT_CONFIGURED_MESSAGE}</p>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-24 text-center">
+        <h2 className="font-serif-editorial text-3xl text-[#302C29]">No pudimos cargar las reservas</h2>
+        <p className="text-xs text-[#80766E] mt-3">{loadError}</p>
+        <button
+          type="button"
+          onClick={() => setReloadKey(k => k + 1)}
+          className="mt-4 px-5 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white text-xs font-medium rounded-lg cursor-pointer"
+        >
+          Reintentar
+        </button>
+      </div>
+    );
+  }
+
+  if (!catalog || !remoteBusiness) {
+    return <div className="max-w-md mx-auto px-4 py-24 text-center text-xs text-[#80766E]">Cargando reservas…</div>;
+  }
+
+  return (
+    <BookingWizard
+      business={remoteBusiness}
+      businessUuid={businessUuid}
+      catalog={catalog}
+      onBookingComplete={onBookingComplete}
+      onGoToSelfService={onGoToSelfService}
+    />
+  );
+};
+
+interface BookingWizardProps {
+  business: BusinessConfig;
+  businessUuid: string;
+  catalog: PublicCatalog;
+  onBookingComplete: (bookingCode: string) => void;
+  onGoToSelfService: (code: string) => void;
+}
+
+const BookingWizard: React.FC<BookingWizardProps> = ({
   business,
-  appointments,
-  agendaBlocks,
+  businessUuid,
+  catalog,
   onBookingComplete,
   onGoToSelfService
 }) => {
@@ -76,6 +161,29 @@ export const CustomerBookingFlow: React.FC<CustomerBookingFlowProps> = ({
   );
 
   const totalDurationMinutes = selectedServices.reduce((acc, s) => acc + s.durationMinutes, 0);
+
+  // Disponibilidad desde Supabase (public_availability / public_catalog)
+  const serviceKey = selectedServiceIds.join(',');
+  const remote = useMemo<RemoteAvailability>(() => {
+    const serviceUuids = serviceKey ? serviceKey.split(',') : [];
+    const professionalUuid = selectedProfessionalId || null;
+    const loadDay = (date: string) => fetchDaySlots({
+      businessUuid,
+      locationUuid: selectedLocationId,
+      date,
+      serviceUuids,
+      professionalUuid
+    });
+    return {
+      loadDay,
+      loadMonth: (year, month) => fetchMonthSummary({
+        catalog,
+        year,
+        month,
+        fetchDay: loadDay
+      })
+    };
+  }, [businessUuid, catalog, selectedLocationId, serviceKey, selectedProfessionalId]);
 
   const toggleService = (serviceId: string) => {
     setSelectedServiceIds(prev => {
@@ -118,64 +226,61 @@ export const CustomerBookingFlow: React.FC<CustomerBookingFlowProps> = ({
     setIsSubmitting(true);
     setErrorMessage(null);
 
-    // Atomic server-level double validation (Regla 7)
-    const verification = verifyAndConfirmBooking(
-      business,
-      selectedSlot,
-      selectedDate,
-      selectedLocationId,
-      appointments,
-      agendaBlocks,
-      customerData.phone
-    );
+    // La validación definitiva la hace create_public_booking en la base (transacción y restricciones).
+    // Solo se muestra confirmación si el servidor devuelve el código del turno.
+    try {
+      const created = await createPublicBooking({
+        businessUuid,
+        locationUuid: selectedLocationId,
+        date: selectedDate,
+        startTime: selectedSlot.startTime,
+        serviceUuids: selectedServiceIds,
+        professionalUuid: selectedProfessionalId || null,
+        name: customerData.name.trim(),
+        phone: customerData.phone.trim(),
+        email: customerData.email || '',
+        notes: customerData.notes || ''
+      });
 
-    if (!verification.success) {
+      const confirmed: Appointment = {
+        id: `remote_${created.code}`,
+        bookingCode: created.code,
+        businessId: business.id,
+        customer: customerData,
+        date: created.date,
+        startTime: created.startTime,
+        endTime: created.endTime,
+        totalDurationMinutes,
+        status: 'confirmed',
+        locationId: selectedLocationId,
+        estimatedPrice: pricingEval.totalPrice,
+        bundleAppliedName: pricingEval.bundlesApplied[0]?.name,
+        priceNote: pricingEval.variableNote,
+        segments: selectedSlot.segmentsPlan.map((sp, idx) => ({
+          id: `seg_${created.code}_${idx}`,
+          serviceId: sp.serviceId,
+          serviceName: sp.serviceName,
+          startTime: sp.startTime,
+          endTime: sp.endTime,
+          durationMinutes: sp.durationMinutes,
+          professionalId: sp.professionalId,
+          professionalName: sp.professionalName,
+          resourceIds: [],
+          status: 'scheduled'
+        })),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      setCompletedAppointment(confirmed);
+      setCurrentStep(4);
+      onBookingComplete(created.code);
+    } catch (err) {
+      // Horario ocupado, error de red o de servidor: el turno no se muestra como confirmado.
+      setErrorMessage((err as Error).message);
+    } finally {
       setIsSubmitting(false);
-      setErrorMessage(verification.error || 'El turno ya no está disponible. Por favor elige otro horario.');
-      return;
     }
-
-    // Generate unique booking code
-    const randomCodeSuffix = Math.floor(1000 + Math.random() * 9000);
-    const bookingCode = `MAE-${randomCodeSuffix}`;
-
-    const newAppointment: Appointment = {
-      id: `apt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      bookingCode,
-      businessId: business.id,
-      customer: customerData,
-      date: selectedDate,
-      startTime: selectedSlot.startTime,
-      endTime: selectedSlot.endTime,
-      totalDurationMinutes,
-      status: 'confirmed',
-      locationId: selectedLocationId,
-      estimatedPrice: pricingEval.totalPrice,
-      bundleAppliedName: pricingEval.bundlesApplied[0]?.name,
-      priceNote: pricingEval.variableNote,
-      segments: selectedSlot.segmentsPlan.map((sp, idx) => ({
-        id: `seg_${Date.now()}_${idx}`,
-        serviceId: sp.serviceId,
-        serviceName: sp.serviceName,
-        startTime: sp.startTime,
-        endTime: sp.endTime,
-        durationMinutes: sp.durationMinutes,
-        professionalId: sp.professionalId,
-        professionalName: sp.professionalName,
-        resourceIds: sp.resourceIds,
-        status: 'scheduled'
-      })),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    // Save to persistent storage and broadcast
-    saveAppointment(newAppointment);
-
-    setCompletedAppointment(newAppointment);
-    setIsSubmitting(false);
-    setCurrentStep(4);
-    onBookingComplete(bookingCode);
   };
 
   const filteredServices = business.services.filter(s => {
@@ -444,12 +549,13 @@ export const CustomerBookingFlow: React.FC<CustomerBookingFlowProps> = ({
             config={business}
             selectedServices={selectedServices}
             locationId={selectedLocationId}
-            appointments={appointments}
-            agendaBlocks={agendaBlocks}
+            appointments={NO_APPOINTMENTS}
+            agendaBlocks={NO_BLOCKS}
             selectedProfessionalId={selectedProfessionalId || undefined}
             selectedDate={selectedDate}
             selectedSlot={selectedSlot}
             onSelectSlot={handleSelectSlot}
+            remote={remote}
           />
 
           {/* If slot chosen, continue */}

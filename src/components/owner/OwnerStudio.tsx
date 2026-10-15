@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  BusinessConfig, 
-  Appointment, 
-  AgendaBlock, 
+import {
+  BusinessConfig,
+  Appointment,
+  AgendaBlock,
   AppointmentStatus,
   Professional,
   Service,
@@ -15,6 +15,9 @@ import { StaffEditModal } from './StaffEditModal';
 import { ResourceEditModal } from './ResourceEditModal';
 import { ScheduleEditModal } from './ScheduleEditModal';
 import { VisualCalendarView } from './VisualCalendarView';
+import { ImportLocalConfigModal } from './ImportLocalConfigModal';
+import type { BusinessSettingsInput } from '../../services/ownerCatalog';
+import { createInFlightRunner } from '../../services/inFlight';
 import { 
   saveAppointment, 
   updateAppointmentStatus, 
@@ -54,7 +57,28 @@ interface OwnerStudioProps {
   appointments: Appointment[];
   agendaBlocks: AgendaBlock[];
   onRefresh: () => void;
+  // Cambia el estado en Supabase. Solo resuelve si la base confirmó el cambio.
+  onChangeAppointmentStatus: (aptId: string, status: AppointmentStatus) => Promise<void>;
+  // Servicios en Supabase. Si no se pasan, los servicios se guardan en localStorage.
+  onSaveService?: (service: Service) => Promise<void>;
+  onDeleteService?: (serviceId: string) => Promise<void>;
+  // Equipo y horarios en Supabase
+  onSaveStaff?: (staff: Professional) => Promise<void>;
+  onDeleteStaff?: (staffId: string) => Promise<void>;
+  onSaveSchedule?: (hours: BusinessConfig['weeklyBusinessHours'], holidays: string[]) => Promise<void>;
+  // Recursos, bloqueos (quitar) y ajustes en Supabase
+  onSaveResource?: (resource: Resource) => Promise<void>;
+  onDeleteResource?: (resourceId: string) => Promise<void>;
+  onSaveSettings?: (settings: BusinessSettingsInput) => Promise<void>;
+  onDeleteBlock?: (blockId: string) => Promise<void>;
+  // Estudio conectado a Supabase: las secciones sin conexión no guardan nada en el navegador
+  remoteConfig?: boolean;
 }
+
+const NOT_CONNECTED_MESSAGE = 'Esta sección todavía no está conectada a la base. Los cambios no se guardan aquí.';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Clave de guardado: un registro nuevo usa una sola clave aunque el modal genere un ID distinto en cada envío
+const saveKey = (prefix: string, id: string) => `${prefix}:${UUID_RE.test(id) ? id : 'new'}`;
 
 type StudioTab = 'agenda' | 'servicios' | 'equipo' | 'horarios' | 'recursos' | 'clientes' | 'ajustes';
 type AgendaViewMode = 'day' | 'week' | 'staff' | 'location';
@@ -63,6 +87,17 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
   business,
   appointments,
   agendaBlocks,
+  onChangeAppointmentStatus,
+  onSaveService,
+  onDeleteService,
+  onSaveStaff,
+  onDeleteStaff,
+  onSaveSchedule,
+  onSaveResource,
+  onDeleteResource,
+  onSaveSettings,
+  onDeleteBlock,
+  remoteConfig,
   onRefresh
 }) => {
   const [activeTab, setActiveTab] = useState<StudioTab>('agenda');
@@ -92,6 +127,14 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
   // Schedule CRUD state
   const [showScheduleModal, setShowScheduleModal] = useState(false);
 
+  // Guardados en curso: un doble clic o un reintento no repite la operación y el botón muestra "Guardando…"
+  const [savingKeys, setSavingKeys] = useState<string[]>([]);
+  const [saveRunner] = useState(() => createInFlightRunner(setSavingKeys));
+  const isSaving = (prefix: string) => savingKeys.some(k => k.startsWith(prefix));
+
+  // Importación de la configuración guardada en este navegador
+  const [showImport, setShowImport] = useState(false);
+
   // Notifications state
   const [notifications, setNotifications] = useState<OwnerNotification[]>([]);
   const [showNotificationsTray, setShowNotificationsTray] = useState(false);
@@ -117,7 +160,19 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     setSettingsForm(pickSettings(business));
   }, [business.id]);
 
-  const handleSaveService = (service: Service) => {
+  const handleSaveService = async (service: Service) => {
+    if (onSaveService) {
+      try {
+        await onSaveService(service);
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      setShowServiceModal(false);
+      setServiceToEdit(null);
+      onRefresh();
+      return;
+    }
     const existingIdx = business.services.findIndex(s => s.id === service.id);
     let updatedServices: Service[];
     if (existingIdx >= 0) {
@@ -136,7 +191,19 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     onRefresh();
   };
 
-  const handleDeleteService = (serviceId: string) => {
+  const handleDeleteService = async (serviceId: string) => {
+    if (onDeleteService) {
+      try {
+        await onDeleteService(serviceId);
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      setShowServiceModal(false);
+      setServiceToEdit(null);
+      onRefresh();
+      return;
+    }
     const updatedServices = business.services.filter(s => s.id !== serviceId);
     const updatedBiz: BusinessConfig = {
       ...business,
@@ -148,7 +215,21 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     onRefresh();
   };
 
-  const handleSaveStaff = (staff: Professional) => {
+  const handleSaveStaff = async (staff: Professional) => {
+    if (onSaveStaff) {
+      try {
+        const ran = await saveRunner.run(saveKey('staff', staff.id), () => onSaveStaff(staff));
+        if (!ran) return;
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      setShowStaffModal(false);
+      setStaffToEdit(null);
+      onRefresh();
+      return;
+    }
+    if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
     const existingIdx = business.professionals.findIndex(p => p.id === staff.id);
     let updatedStaff: Professional[];
     if (existingIdx >= 0) {
@@ -167,7 +248,21 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     onRefresh();
   };
 
-  const handleDeleteStaff = (staffId: string) => {
+  const handleDeleteStaff = async (staffId: string) => {
+    if (onDeleteStaff) {
+      try {
+        const ran = await saveRunner.run(`staff-del:${staffId}`, () => onDeleteStaff(staffId));
+        if (!ran) return;
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      setShowStaffModal(false);
+      setStaffToEdit(null);
+      onRefresh();
+      return;
+    }
+    if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
     const updatedStaff = business.professionals.filter(p => p.id !== staffId);
     const updatedBiz: BusinessConfig = {
       ...business,
@@ -179,7 +274,21 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     onRefresh();
   };
 
-  const handleSaveResource = (res: Resource) => {
+  const handleSaveResource = async (res: Resource) => {
+    if (onSaveResource) {
+      try {
+        const ran = await saveRunner.run(saveKey('resource', res.id), () => onSaveResource(res));
+        if (!ran) return;
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      setShowResourceModal(false);
+      setResourceToEdit(null);
+      onRefresh();
+      return;
+    }
+    if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
     const existingIdx = business.resources.findIndex(r => r.id === res.id);
     let updatedRes: Resource[];
     if (existingIdx >= 0) {
@@ -198,7 +307,21 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     onRefresh();
   };
 
-  const handleDeleteResource = (resId: string) => {
+  const handleDeleteResource = async (resId: string) => {
+    if (onDeleteResource) {
+      try {
+        const ran = await saveRunner.run(`resource-del:${resId}`, () => onDeleteResource(resId));
+        if (!ran) return;
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      setShowResourceModal(false);
+      setResourceToEdit(null);
+      onRefresh();
+      return;
+    }
+    if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
     const updatedRes = business.resources.filter(r => r.id !== resId);
     const updatedBiz: BusinessConfig = {
       ...business,
@@ -210,10 +333,23 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
     onRefresh();
   };
 
-  const handleSaveSchedule = (
+  const handleSaveSchedule = async (
     updatedHours: BusinessConfig['weeklyBusinessHours'],
     holidays: string[]
   ) => {
+    if (onSaveSchedule) {
+      try {
+        const ran = await saveRunner.run('schedule', () => onSaveSchedule(updatedHours, holidays));
+        if (!ran) return;
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      setShowScheduleModal(false);
+      onRefresh();
+      return;
+    }
+    if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
     const updatedBiz: BusinessConfig = {
       ...business,
       weeklyBusinessHours: updatedHours,
@@ -250,21 +386,58 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
 
   const nextAppointment = upcomingAppointments[0];
 
-  const handleUpdateStatus = (aptId: string, status: AppointmentStatus) => {
-    updateAppointmentStatus(aptId, status);
+  const handleUpdateStatus = async (aptId: string, status: AppointmentStatus) => {
+    try {
+      await onChangeAppointmentStatus(aptId, status);
+    } catch (err) {
+      // Si Supabase no confirmó el cambio, la pantalla no se actualiza
+      alert((err as Error).message);
+      return;
+    }
     if (selectedAppointmentForDetail && selectedAppointmentForDetail.id === aptId) {
       setSelectedAppointmentForDetail({ ...selectedAppointmentForDetail, status });
     }
     onRefresh();
   };
 
-  const handleDeleteBlock = (blockId: string) => {
+  // Turnos y bloqueos desde el Estudio: el formulario lee disponibilidad y guarda en Supabase
+  const openNewAppointment = () => {
+    if (!remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
+    setShowNewModal(true);
+  };
+
+  const handleDeleteBlock = async (blockId: string) => {
+    if (onDeleteBlock) {
+      try {
+        const ran = await saveRunner.run(`block:${blockId}`, () => onDeleteBlock(blockId));
+        if (!ran) return;
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      onRefresh();
+      return;
+    }
+    if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
     removeAgendaBlock(blockId);
     onRefresh();
   };
 
-  const handleSaveSettings = (e: React.FormEvent) => {
+  const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (onSaveSettings) {
+      try {
+        const ran = await saveRunner.run('settings', () => onSaveSettings(settingsForm));
+        if (!ran) return;
+      } catch (err) {
+        alert((err as Error).message);
+        return;
+      }
+      alert('Configuración del negocio guardada exitosamente.');
+      onRefresh();
+      return;
+    }
+    if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
     // Partimos del negocio vigente y aplicamos solo los campos de Ajustes
     saveBusinessConfig({ ...business, ...settingsForm });
     alert('Configuración del negocio guardada exitosamente.');
@@ -340,7 +513,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
           </div>
 
           <button
-            onClick={() => setShowNewModal(true)}
+            onClick={openNewAppointment}
             className="px-4 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white text-xs font-semibold rounded-lg flex items-center gap-2 transition-colors cursor-pointer shadow-xs"
           >
             <Plus className="w-4 h-4" />
@@ -543,7 +716,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
             onSelectAppointment={(apt) => setSelectedAppointmentForDetail(apt)}
             onQuickNewAppointment={(date, startTime, profId) => {
               setSelectedDate(date);
-              setShowNewModal(true);
+              openNewAppointment();
             }}
           />
 
@@ -555,7 +728,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
                   No hay reservas programadas para este filtro o fecha.
                   <div className="mt-3">
                     <button
-                      onClick={() => setShowNewModal(true)}
+                      onClick={openNewAppointment}
                       className="text-xs font-semibold text-[#302C29] underline hover:text-[#B69A70]"
                     >
                       + Crear un turno manualmente
@@ -1174,7 +1347,6 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
               >
                 <option value="15">Cada 15 minutos</option>
                 <option value="30">Cada 30 minutos</option>
-                <option value="60">Cada 60 minutos</option>
               </select>
             </div>
 
@@ -1189,11 +1361,30 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
             </div>
           </div>
 
+          {remoteConfig && (
+            <div className="pt-4 border-t border-[#E5DDD3] flex flex-wrap gap-3 justify-between items-center">
+              <div>
+                <span className="font-semibold text-[#302C29] block">Configuración guardada en este navegador</span>
+                <span className="text-[11px] text-[#80766E]">
+                  Podés revisar y copiar al negocio en la base las sedes, servicios, equipo, recursos, horarios y bloqueos de aquí.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowImport(true)}
+                className="px-4 py-2.5 border border-[#E5DDD3] text-[#302C29] hover:border-[#302C29] rounded-lg cursor-pointer"
+              >
+                Revisar e importar
+              </button>
+            </div>
+          )}
+
           <div className="pt-4 border-t border-[#E5DDD3] flex flex-wrap gap-3 justify-between items-center">
             <div className="flex items-center gap-3">
               <button
                 type="button"
                 onClick={() => {
+                  if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
                   const c = getStoredCounts();
                   const summary =
                     `Esto borra TODOS los datos guardados en este navegador, de todos los negocios:\n` +
@@ -1218,6 +1409,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  if (remoteConfig) { alert(NOT_CONNECTED_MESSAGE); return; }
                   if (confirm(`¿Vaciar la agenda de "${business.name}"? Se eliminan sus turnos, bloqueos y avisos. Servicios, equipo y horarios se conservan.`)) {
                     clearBusinessAgenda(business.id);
                     onRefresh();
@@ -1232,9 +1424,10 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
 
             <button
               type="submit"
-              className="px-5 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs cursor-pointer"
+              disabled={isSaving('settings')}
+              className="px-5 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs cursor-pointer disabled:opacity-60"
             >
-              Guardar Cambios
+              {isSaving('settings') ? 'Guardando…' : 'Guardar Cambios'}
             </button>
           </div>
         </form>
@@ -1247,6 +1440,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
           appointments={appointments}
           agendaBlocks={agendaBlocks}
           defaultDate={selectedDate}
+          remoteBusinessUuid={remoteConfig ? business.id : undefined}
           onClose={() => setShowNewModal(false)}
           onSuccess={() => {
             setShowNewModal(false);
@@ -1280,6 +1474,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
           }}
           onSave={handleSaveStaff}
           onDelete={handleDeleteStaff}
+          saving={isSaving('staff:') || isSaving('staff-del:')}
         />
       )}
 
@@ -1294,6 +1489,7 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
           }}
           onSave={handleSaveResource}
           onDelete={handleDeleteResource}
+          saving={isSaving('resource:') || isSaving('resource-del:')}
         />
       )}
 
@@ -1303,6 +1499,17 @@ export const OwnerStudio: React.FC<OwnerStudioProps> = ({
           business={business}
           onClose={() => setShowScheduleModal(false)}
           onSave={handleSaveSchedule}
+          saving={isSaving('schedule')}
+        />
+      )}
+
+      {/* Importación desde este navegador: solo con el Estudio conectado */}
+      {showImport && remoteConfig && (
+        <ImportLocalConfigModal
+          remote={business}
+          remoteBlocks={agendaBlocks}
+          onClose={() => setShowImport(false)}
+          onImported={() => { setShowImport(false); onRefresh(); }}
         />
       )}
     </div>

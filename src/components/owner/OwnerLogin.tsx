@@ -1,40 +1,78 @@
 import React, { useState } from 'react';
-import { BusinessConfig } from '../../types';
 import { Lock, Mail, KeyRound, AlertCircle, ArrowRight } from 'lucide-react';
+import { signInOwner, signUpOwner } from '../../services/ownerSupabase';
 
 interface OwnerLoginProps {
-  business: BusinessConfig;
   onLoginSuccess: () => void;
   onCancel: () => void;
 }
 
+type Mode = 'login' | 'signup' | 'confirm';
+
+// Acceso del dueño con Supabase Auth: inicio de sesión y registro. Sin credenciales locales.
 export const OwnerLogin: React.FC<OwnerLoginProps> = ({
-  business,
   onLoginSuccess,
   onCancel
 }) => {
+  const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    setError(null);
+    setPassword('');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-
-    // Sin credenciales configuradas no hay acceso: no se usa ningún valor por defecto.
-    const validEmail = business.ownerCredentials?.email;
-    const validPassword = business.ownerCredentials?.password;
-    if (!validEmail || !validPassword) {
-      setError('Este negocio no tiene acceso de propietario configurado.');
-      return;
-    }
-
-    if (email.trim().toLowerCase() === validEmail.toLowerCase() && password === validPassword) {
-      onLoginSuccess();
-    } else {
-      setError('Correo o contraseña incorrectos.');
+    setIsSubmitting(true);
+    try {
+      if (mode === 'login') {
+        await signInOwner(email, password);
+        setPassword('');
+        onLoginSuccess();
+      } else {
+        const result = await signUpOwner(email, password);
+        setPassword('');
+        if (result.needsEmailConfirmation) {
+          setMode('confirm');
+        } else {
+          onLoginSuccess();
+        }
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
+
+  if (mode === 'confirm') {
+    return (
+      <div className="max-w-md mx-auto px-4 py-16">
+        <div className="bg-white border border-[#E5DDD3] rounded-2xl p-8 shadow-sm text-center space-y-4">
+          <h2 className="font-serif-editorial text-2xl font-normal text-[#302C29]">Revisá tu correo</h2>
+          <p className="text-xs text-[#80766E]">
+            Te enviamos un enlace para confirmar tu cuenta a <strong className="text-[#302C29]">{email}</strong>.
+            Abrilo desde ese correo y después volvé a iniciar sesión.
+          </p>
+          <button
+            type="button"
+            onClick={() => switchMode('login')}
+            className="px-6 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white font-semibold rounded-lg text-xs cursor-pointer"
+          >
+            Volver a iniciar sesión
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const isSignup = mode === 'signup';
 
   return (
     <div className="max-w-md mx-auto px-4 py-16">
@@ -47,10 +85,12 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({
             Acceso Administrativo Privado
           </span>
           <h2 className="font-serif-editorial text-2xl font-normal text-[#302C29]">
-            Estudio del Propietario
+            {isSignup ? 'Crear cuenta de propietario' : 'Estudio del Propietario'}
           </h2>
           <p className="text-xs text-[#80766E] mt-1">
-            Inicia sesión para gestionar tu negocio, horarios, equipo y agenda en tiempo real.
+            {isSignup
+              ? 'Creá tu cuenta para configurar tu negocio y gestionar tu agenda.'
+              : 'Inicia sesión para gestionar tu negocio, horarios, equipo y agenda en tiempo real.'}
           </p>
         </div>
 
@@ -85,7 +125,8 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({
               <input
                 type="password"
                 required
-                autoComplete="current-password"
+                minLength={6}
+                autoComplete={isSignup ? 'new-password' : 'current-password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -105,13 +146,26 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({
 
             <button
               type="submit"
-              className="px-6 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+              disabled={isSubmitting}
+              className="px-6 py-2.5 bg-[#302C29] hover:bg-[#1a1715] text-white font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs disabled:opacity-60"
             >
-              <span>Ingresar al Estudio</span>
+              <span>{isSignup ? 'Crear cuenta' : 'Ingresar al Estudio'}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
         </form>
+
+        <div className="mt-6 text-center text-xs text-[#80766E]">
+          {isSignup ? (
+            <button type="button" onClick={() => switchMode('login')} className="underline cursor-pointer">
+              Ya tengo cuenta: iniciar sesión
+            </button>
+          ) : (
+            <button type="button" onClick={() => switchMode('signup')} className="underline cursor-pointer">
+              Crear cuenta de propietario
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

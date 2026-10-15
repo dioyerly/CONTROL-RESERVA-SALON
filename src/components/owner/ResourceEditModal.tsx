@@ -8,6 +8,7 @@ interface ResourceEditModalProps {
   onClose: () => void;
   onSave: (resource: Resource) => void;
   onDelete?: (resourceId: string) => void;
+  saving?: boolean;
 }
 
 export const ResourceEditModal: React.FC<ResourceEditModalProps> = ({
@@ -15,7 +16,8 @@ export const ResourceEditModal: React.FC<ResourceEditModalProps> = ({
   resourceToEdit,
   onClose,
   onSave,
-  onDelete
+  onDelete,
+  saving = false
 }) => {
   const isEditing = !!resourceToEdit;
 
@@ -146,9 +148,10 @@ export const ResourceEditModal: React.FC<ResourceEditModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs"
+                disabled={saving}
+                className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs disabled:opacity-60"
               >
-                Guardar Recurso
+                {saving ? 'Guardando…' : 'Guardar Recurso'}
               </button>
             </div>
           </div>

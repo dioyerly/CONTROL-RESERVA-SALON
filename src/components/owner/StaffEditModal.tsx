@@ -8,6 +8,7 @@ interface StaffEditModalProps {
   onClose: () => void;
   onSave: (staff: Professional) => void;
   onDelete?: (staffId: string) => void;
+  saving?: boolean;
 }
 
 export const StaffEditModal: React.FC<StaffEditModalProps> = ({
@@ -15,7 +16,8 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
   staffToEdit,
   onClose,
   onSave,
-  onDelete
+  onDelete,
+  saving = false
 }) => {
   const isEditing = !!staffToEdit;
 
@@ -230,9 +232,10 @@ export const StaffEditModal: React.FC<StaffEditModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs"
+                disabled={saving}
+                className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs disabled:opacity-60"
               >
-                Guardar Profesional
+                {saving ? 'Guardando…' : 'Guardar Profesional'}
               </button>
             </div>
           </div>

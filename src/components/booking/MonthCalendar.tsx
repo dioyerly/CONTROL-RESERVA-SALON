@@ -14,6 +14,12 @@ import {
 } from '../../services/availabilityEngine';
 import { ChevronLeft, ChevronRight, Sun, Sunset, Moon } from 'lucide-react';
 
+// Disponibilidad desde Supabase. Si se pasa, el calendario no usa el cálculo local.
+export interface RemoteAvailability {
+  loadMonth: (year: number, month: number) => Promise<Record<string, DayAvailabilitySummary>>;
+  loadDay: (dateIso: string) => Promise<CalculatedSlot[]>;
+}
+
 interface MonthCalendarProps {
   config: BusinessConfig;
   selectedServices: Service[];
@@ -24,6 +30,7 @@ interface MonthCalendarProps {
   selectedDate: string | null;
   selectedSlot: CalculatedSlot | null;
   onSelectSlot: (date: string, slot: CalculatedSlot) => void;
+  remote?: RemoteAvailability;
 }
 
 const MONTH_NAMES = [
@@ -32,6 +39,9 @@ const MONTH_NAMES = [
 ];
 
 const DAY_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+// Constantes estables para que el modo remoto no recalcule en cada render
+const EMPTY_MONTH: Record<string, DayAvailabilitySummary> = {};
 
 export const MonthCalendar: React.FC<MonthCalendarProps> = ({
   config,
@@ -42,14 +52,49 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
   selectedProfessionalId,
   selectedDate,
   selectedSlot,
-  onSelectSlot
+  onSelectSlot,
+  remote
 }) => {
   const today = new Date();
   const [currentYear, setCurrentYear] = useState(today.getFullYear());
   const [currentMonth, setCurrentMonth] = useState(today.getMonth());
 
+  // Estado de la disponibilidad remota (solo se usa si `remote` está definido)
+  const [remoteMonth, setRemoteMonth] = useState<Record<string, DayAvailabilitySummary> | null>(null);
+  const [remoteMonthError, setRemoteMonthError] = useState<string | null>(null);
+  const [remoteDay, setRemoteDay] = useState<CalculatedSlot[] | null>(null);
+  const [remoteDayError, setRemoteDayError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+
+  React.useEffect(() => {
+    if (!remote) return;
+    let cancelled = false;
+    setRemoteMonth(null);
+    setRemoteMonthError(null);
+    remote.loadMonth(currentYear, currentMonth)
+      .then(result => { if (!cancelled) setRemoteMonth(result); })
+      .catch((err: Error) => { if (!cancelled) setRemoteMonthError(err.message); });
+    return () => { cancelled = true; };
+  }, [remote, currentYear, currentMonth, retryKey]);
+
+  React.useEffect(() => {
+    if (!remote || !selectedDate) {
+      setRemoteDay(null);
+      setRemoteDayError(null);
+      return;
+    }
+    let cancelled = false;
+    setRemoteDay(null);
+    setRemoteDayError(null);
+    remote.loadDay(selectedDate)
+      .then(slots => { if (!cancelled) setRemoteDay(slots); })
+      .catch((err: Error) => { if (!cancelled) setRemoteDayError(err.message); });
+    return () => { cancelled = true; };
+  }, [remote, selectedDate, retryKey]);
+
   // Calculate day states for the displayed month (memoized to avoid rerender thrashing)
   const monthAvailability = React.useMemo(() => {
+    if (remote) return remoteMonth ?? EMPTY_MONTH;
     return calculateMonthAvailability(
       config,
       selectedServices,
@@ -60,10 +105,11 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
       agendaBlocks,
       selectedProfessionalId
     );
-  }, [config, selectedServices, currentYear, currentMonth, locationId, appointments, agendaBlocks, selectedProfessionalId]);
+  }, [remote, remoteMonth, config, selectedServices, currentYear, currentMonth, locationId, appointments, agendaBlocks, selectedProfessionalId]);
 
   // Calculate available slots for the selected date (memoized)
   const availableSlotsForDay: CalculatedSlot[] = React.useMemo(() => {
+    if (remote) return remoteDay ?? [];
     if (!selectedDate) return [];
     return calculateAvailableSlotsForServices(
       config,
@@ -74,7 +120,7 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
       agendaBlocks,
       selectedProfessionalId
     );
-  }, [config, selectedServices, selectedDate, locationId, appointments, agendaBlocks, selectedProfessionalId]);
+  }, [remote, remoteDay, config, selectedServices, selectedDate, locationId, appointments, agendaBlocks, selectedProfessionalId]);
 
   // Group slots by period
   const morningSlots = availableSlotsForDay.filter(s => s.period === 'morning');
@@ -83,6 +129,18 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
 
   // Auto-select first available day if none selected
   React.useEffect(() => {
+    if (remote) {
+      if (selectedDate || !remoteMonth) return;
+      const firstOpen = Object.values(remoteMonth).find(
+        d => (d.level === 'high' || d.level === 'limited') && d.totalSlotsCount > 0
+      );
+      if (firstOpen) {
+        remote.loadDay(firstOpen.date)
+          .then(slots => { if (slots.length > 0) onSelectSlot(firstOpen.date, slots[0]); })
+          .catch(() => { /* el error se muestra en el calendario */ });
+      }
+      return;
+    }
     if (!selectedDate) {
       const firstOpenDay = Object.values(monthAvailability).find(
         d => (d.level === 'high' || d.level === 'limited') && d.totalSlotsCount > 0
@@ -102,7 +160,7 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
         }
       }
     }
-  }, [selectedDate, monthAvailability, config, selectedServices, locationId, appointments, agendaBlocks, selectedProfessionalId, onSelectSlot]);
+  }, [remote, remoteMonth, selectedDate, monthAvailability, config, selectedServices, locationId, appointments, agendaBlocks, selectedProfessionalId, onSelectSlot]);
 
   const goToPrevMonth = () => {
     if (currentMonth === 0) {
@@ -128,6 +186,12 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
 
   const handleDayClick = (dateStr: string, summary?: DayAvailabilitySummary) => {
     if (!summary || summary.level === 'closed' || summary.level === 'none') {
+      return;
+    }
+    if (remote) {
+      remote.loadDay(dateStr)
+        .then(slots => { if (slots.length > 0) onSelectSlot(dateStr, slots[0]); })
+        .catch(() => { /* el error se muestra en el calendario */ });
       return;
     }
     // Calculate slots for that date and set default if needed
@@ -176,6 +240,19 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Estado de la disponibilidad remota del mes */}
+        {remote && remoteMonthError && (
+          <div className="mb-4 p-3 bg-white border border-[#CEAAA3] rounded-lg text-xs text-[#302C29] flex items-center justify-between gap-3">
+            <span>{remoteMonthError}</span>
+            <button type="button" onClick={() => setRetryKey(k => k + 1)} className="underline cursor-pointer whitespace-nowrap">
+              Reintentar
+            </button>
+          </div>
+        )}
+        {remote && !remoteMonthError && remoteMonth === null && (
+          <div className="mb-4 text-xs text-[#80766E]">Cargando disponibilidad…</div>
+        )}
 
         {/* Days of week header */}
         <div className="grid grid-cols-7 gap-1 sm:gap-2 mb-2 text-center">
@@ -292,7 +369,16 @@ export const MonthCalendar: React.FC<MonthCalendarProps> = ({
             </p>
           </div>
 
-          {availableSlotsForDay.length === 0 ? (
+          {remote && remoteDayError ? (
+            <div className="py-8 text-center text-sm text-[#80766E] space-y-2">
+              <p>{remoteDayError}</p>
+              <button type="button" onClick={() => setRetryKey(k => k + 1)} className="underline cursor-pointer">
+                Reintentar
+              </button>
+            </div>
+          ) : remote && remoteDay === null ? (
+            <div className="py-8 text-center text-sm text-[#80766E]">Cargando horarios…</div>
+          ) : availableSlotsForDay.length === 0 ? (
             <div className="py-8 text-center text-sm text-[#80766E]">
               No hay horarios disponibles para esta combinación en esta fecha.
             </div>

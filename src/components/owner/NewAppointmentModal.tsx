@@ -1,13 +1,20 @@
-import React, { useState } from 'react';
-import { 
-  BusinessConfig, 
-  Appointment, 
-  AgendaBlock, 
-  CalculatedSlot 
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  BusinessConfig,
+  Appointment,
+  AgendaBlock,
+  CalculatedSlot
 } from '../../types';
 import { calculateAvailableSlotsForServices } from '../../services/availabilityEngine';
 import { saveAppointment, addAgendaBlock } from '../../services/storage';
 import { formatCurrency } from '../../services/pricingEngine';
+import { fetchDaySlots } from '../../services/supabaseBooking';
+import {
+  bookingActions,
+  validateAppointmentInput,
+  validateBlockInput
+} from '../../services/bookingActions';
+import { createRemoteBlock } from '../../services/ownerCatalog';
 import { X, Calendar, Clock, User, ShieldAlert, Check } from 'lucide-react';
 
 interface NewAppointmentModalProps {
@@ -17,7 +24,14 @@ interface NewAppointmentModalProps {
   onClose: () => void;
   onSuccess: () => void;
   defaultDate?: string;
+  // Con el Estudio conectado: disponibilidad, turnos y bloqueos se leen y guardan en Supabase
+  remoteBusinessUuid?: string;
 }
+
+const todayIsoNow = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
   business,
@@ -25,8 +39,10 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
   agendaBlocks,
   onClose,
   onSuccess,
-  defaultDate = new Date().toISOString().split('T')[0]
+  defaultDate = new Date().toISOString().split('T')[0],
+  remoteBusinessUuid
 }) => {
+  const isRemote = !!remoteBusinessUuid;
   const [mode, setMode] = useState<'appointment' | 'block'>('appointment');
 
   // Appointment fields
@@ -49,10 +65,37 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
 
   const [error, setError] = useState<string | null>(null);
 
+  // Estado de la conexión a Supabase (solo con el Estudio conectado)
+  const [remoteSlots, setRemoteSlots] = useState<CalculatedSlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
+  const [slotsReload, setSlotsReload] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
   const selectedService = business.services.find(s => s.id === selectedServiceId);
 
+  // Disponibilidad real desde Supabase (la misma función que usa la reserva pública)
+  useEffect(() => {
+    if (!remoteBusinessUuid || !selectedServiceId || !locationId || !date) return;
+    let cancelled = false;
+    setSlotsLoading(true);
+    setSlotsError(null);
+    fetchDaySlots({
+      businessUuid: remoteBusinessUuid,
+      locationUuid: locationId,
+      date,
+      serviceUuids: [selectedServiceId],
+      professionalUuid: professionalId || null
+    })
+      .then(slots => { if (!cancelled) setRemoteSlots(slots); })
+      .catch((err: Error) => { if (!cancelled) { setRemoteSlots([]); setSlotsError(err.message); } })
+      .finally(() => { if (!cancelled) setSlotsLoading(false); });
+    return () => { cancelled = true; };
+  }, [remoteBusinessUuid, selectedServiceId, locationId, date, professionalId, slotsReload]);
+
   // Available slots for the selected service & date
-  const availableSlots = selectedService
+  const availableSlots: CalculatedSlot[] = isRemote ? remoteSlots : selectedService
     ? calculateAvailableSlotsForServices(
         business,
         [selectedService],
@@ -64,8 +107,79 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
       )
     : [];
 
-  const handleCreateAppointment = (e: React.FormEvent) => {
+  // Turno desde el Estudio: solo se informa éxito si Supabase devuelve el código
+  const submitRemoteAppointment = async () => {
+    if (submittingRef.current || !remoteBusinessUuid) return;
+    const problem = validateAppointmentInput({
+      date, today: todayIsoNow(), slotStart: chosenSlot?.startTime ?? null, name: customerName, phone: customerPhone
+    });
+    if (problem) { setError(problem); return; }
+    // create_internal_appointment necesita un profesional: el del segmento elegido por la disponibilidad
+    const professionalUuid = chosenSlot?.segmentsPlan[0]?.professionalId;
+    if (!professionalUuid || !selectedService || !chosenSlot) {
+      setError('No pudimos asignar un profesional a este horario. Elegí otro.');
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const created = await bookingActions.createInternalAppointment({
+        businessUuid: remoteBusinessUuid,
+        professionalUuid,
+        locationUuid: locationId,
+        serviceUuid: selectedService.id,
+        date,
+        startTime: chosenSlot.startTime,
+        name: customerName,
+        phone: customerPhone,
+        notes
+      });
+      alert(`Turno creado. Código: ${created.code}`);
+      onSuccess();
+    } catch (err) {
+      const message = (err as Error).message;
+      setError(message);
+      // Horario ocupado: se recarga la disponibilidad y se elige otro horario
+      if (/no está disponible|posees una cita/i.test(message)) {
+        setChosenSlot(null);
+        setSlotsReload(n => n + 1);
+      }
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  const submitRemoteBlock = async () => {
+    if (submittingRef.current || !remoteBusinessUuid) return;
+    const problem = validateBlockInput({ date, today: todayIsoNow(), startTime: blockStartTime, endTime: blockEndTime });
+    if (problem) { setError(problem); return; }
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(null);
+    try {
+      // Sin sede: el motor de disponibilidad todavía no filtra bloqueos por sede
+      await createRemoteBlock(remoteBusinessUuid, {
+        professionalId: blockStaffId || undefined,
+        date,
+        startTime: blockStartTime,
+        endTime: blockEndTime,
+        reason: blockReason,
+        type: blockType
+      });
+      onSuccess();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  const handleCreateAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isRemote) { await submitRemoteAppointment(); return; }
     if (!chosenSlot || !selectedService) {
       setError('Por favor selecciona un horario disponible.');
       return;
@@ -115,8 +229,9 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
     onSuccess();
   };
 
-  const handleCreateBlock = (e: React.FormEvent) => {
+  const handleCreateBlock = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isRemote) { await submitRemoteBlock(); return; }
     const newBlock: AgendaBlock = {
       id: `blk_${Date.now()}`,
       businessId: business.id,
@@ -240,7 +355,22 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
               <label className="block font-semibold text-[#302C29] mb-1">
                 Horario disponible ({availableSlots.length} encontrados)
               </label>
-              {availableSlots.length === 0 ? (
+              {isRemote && slotsLoading ? (
+                <div className="p-3 bg-[#FAF8F4] border border-[#E5DDD3] rounded-lg text-[#80766E] text-center">
+                  Buscando horarios…
+                </div>
+              ) : isRemote && slotsError ? (
+                <div role="alert" className="p-3 bg-[#FAF8F4] border border-[#CEAAA3] rounded-lg text-[#302C29] flex flex-wrap items-center justify-between gap-2">
+                  <span>{slotsError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSlotsReload(n => n + 1)}
+                    className="px-3 py-1 border border-[#E5DDD3] rounded-lg cursor-pointer"
+                  >
+                    Reintentar
+                  </button>
+                </div>
+              ) : availableSlots.length === 0 ? (
                 <div className="p-3 bg-[#FAF8F4] border border-[#E5DDD3] rounded-lg text-[#80766E] text-center">
                   No hay disponibilidad para esta fecha y servicio.
                 </div>
@@ -317,10 +447,10 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={!chosenSlot}
+                disabled={!chosenSlot || submitting}
                 className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] disabled:opacity-50 text-white font-medium rounded-lg shadow-xs cursor-pointer"
               >
-                Guardar Turno
+                {submitting ? 'Guardando…' : 'Guardar Turno'}
               </button>
             </div>
           </form>
@@ -408,9 +538,10 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs cursor-pointer"
+                disabled={submitting}
+                className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs cursor-pointer disabled:opacity-60"
               >
-                Bloquear Período
+                {submitting ? 'Guardando…' : 'Bloquear Período'}
               </button>
             </div>
           </form>

@@ -6,6 +6,7 @@ interface ScheduleEditModalProps {
   business: BusinessConfig;
   onClose: () => void;
   onSave: (updatedHours: BusinessConfig['weeklyBusinessHours'], holidays: string[]) => void;
+  saving?: boolean;
 }
 
 const DAYS = [
@@ -21,7 +22,8 @@ const DAYS = [
 export const ScheduleEditModal: React.FC<ScheduleEditModalProps> = ({
   business,
   onClose,
-  onSave
+  onSave,
+  saving = false
 }) => {
   const [hoursState, setHoursState] = useState<BusinessConfig['weeklyBusinessHours']>(() => ({
     ...business.weeklyBusinessHours
@@ -199,9 +201,10 @@ export const ScheduleEditModal: React.FC<ScheduleEditModalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs"
+              disabled={saving}
+              className="px-5 py-2 bg-[#302C29] hover:bg-[#1a1715] text-white font-medium rounded-lg shadow-xs disabled:opacity-60"
             >
-              Guardar Horarios
+              {saving ? 'Guardando…' : 'Guardar Horarios'}
             </button>
           </div>
         </form>
